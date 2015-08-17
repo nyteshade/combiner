@@ -69,6 +69,50 @@
  * exposed; including the JSCombiner, CSSCombiner and the PageNameCombiner.
  * Doing so here prevents the need to do so upon each invocation of these
  * functions.
+ *
+ * {
+ *   projectRoot: '/absolute/path/to/project/root/'
+ *
+ *   networkDefaults: {
+ *     protocol: Combiner.(HTTP|HTTPS)
+ *     hostname: "defaultHostname",
+ *     port: env.PORT
+ *   },
+ *
+ *   handlers: {
+ *     '/scripts/': {
+ *       method: 'GET',
+ *       extensions: ['.js', '.es6'],
+ *       middleware: [BABELPreprocessor],
+ *       roots: [
+ *         'public/js',
+ *         {
+ *           type: Combiner.NETWORK,
+ *           path: '/admin/js'
+ *         }
+ *       ]
+ *     },
+ *
+ *     '/css/': {
+ *       method: 'GET',
+ *       extensions: ['.css', '.scss', '.less'],
+ *       middleware: [LESSPreprocessor, SASSPreprocessor],
+ *       pageName: "inferred from accessed endpoint, but overridable here",
+ *       roots: [
+ *         'public/css', [basic strings are considered file system paths]
+ *         {
+ *           type: Combiner.FILE_SYSTEM,
+ *           path: 'less',
+ *           prefix: '/some/other/file/path/' [if not projectRoot]
+ *         },
+ *         {
+ *           type: Combiner.FILE_SYSTEM,
+ *           path: 'sass'
+ *         }
+ *       ]
+ *     }
+ *   }
+ * }
  */
 
 var isA = require('isa-lib')().isA;
@@ -81,14 +125,6 @@ var URL = require('url');
 var extend = require('extend');
 
 var debug = require('debug')('combiner:combiner');
-var trace = require('debug')('combiner:trace');
-var cssLog = require('debug')('combiner:css');
-var jsLog = require('debug')('combiner:js');
-
-var moduleState = {};
-var root = '';
-var jsRoot = '';
-var cssRoot = '';
 
 /**
  * A shortcut for require('util').inspect(...).
@@ -108,64 +144,42 @@ function inspect(obj, depth) {
  * The Combiner is a system that combines, recursively, either CSS or
  * JavaScript files to create a singled packaged output.
  *
- * @param files an array of files to combine or a config object with a files
- *     property
- * @param config a configuration that would override any of the default values
- *     supplied when the combiner is required by a script or above and beyond
- *     the Combiner.DEFAULTS values
+ * @param {Express} app the express() object or app variable for your project.
+ * @param {Object} config the configuration object that will extend the default
+ * properties and modify the way this particular Combiner functions.
  */
-function Combiner(files, config) {
+function Combiner(app, config) {
   // Ensure an instance is being created
   if (this === global) {
-    return new Combiner(files, config);
+    return new Combiner(app, config);
+  }
+
+  if (!app || (app && !app.use && !app.get && !app.set && !app.locals)) {
+    throw new Error('The express or app variable is required.');
   }
 
   // Extend the default configuration with the provided config object if one
   // is present, or the files parameter if it is an object.
-  config = extend({}, Combiner.DEFAULTS, {
-      root: moduleState.root,
-      jsRoot: moduleState.jsRoot,
-      jsUri: moduleState.jsRootUri,
-      cssRoot: moduleState.cssRoot,
-      cssUri: moduleState.cssRootUri,
-      express: moduleState.express || null
-  }, isA(Object, files) ? files : config || {});
+  this.config = extend(true, {}, Combiner.DEFAULTS, config || {});
 
-  // Determine if the first parameter is actually an object with a files
-  // parameter. If file parameter is an array, use that value. Others make
-  // an empty files array. (TODO: Should this be [config.files] if config.files
-  // is a String?)
-  if (isA(Object, files) && files.files) {
-    files = isA(Array, config.files) && config.files || [];
-  }
+  // Store and resolve the project rootz
+  this.projectRoot = pth.resolve(config.projectRoot);
 
-  // If a type isn't specified, derive it from one of the files if we have a
-  // list.
-  if (!config.type && files && files.length) {
-    config.type = Combiner.getType(files[0]);
-  }
-
-  // remove query string if present.
-  config.output = config.output.replace(/\?.*/, "");
-
-  // Generate the output file name. We remove the extension from the supplied
-  // output (supplied where?). We add the suffix if one exists and then again
-  // append the type or .js if one isn't specified.
-  config.output = config.output.replace(Combiner.getType(config.output), '')
-      + config.suffix + (config.type || Combiner.JS);
-
-  this.ROOTS = isA(Array, config.roots) && config.roots || [];
-  this.type = config.type || Combiner.JS;
-  this.files = isA(Array, files) && files || [];
+  // Prepare the requirements and their ordering
   this.requirements = {};
   this.order = [];
-  this.cache = Combiner.getGlobalCache(this.type);
-  this.config = config;
-  this.output = "";
 
-  if (!this.ROOTS.length) {
-    this.ROOTS.push(this.type === Combiner.JS ? config.jsRoot : cssRoot);
-  }
+  // Obtain the proper cache
+  this.cache = Combiner.getGlobalCache();
+
+  // Parse and normalize the network defaults
+  this.parseNetworkDefaults();
+
+  // Parse and normalize the handlers.
+  this.parseHandlers();
+
+  // Apply the handlers
+  this.applyHandlers();
 }
 
 /**
@@ -174,16 +188,12 @@ function Combiner(files, config) {
  */
 Combiner.prototype = {
   /**
-   * JavaScript root directory. All JavaScript should be in one
-   * of the directories this array contains.
+   * This property defines the various handlers and endpoints maintained by
+   * this combiner. It also contains the appropriate roots to monitor.
+   *
+   * @type {Object}
    */
-  ROOTS: null,
-
-  /** The extension of file to process for this combiner action (w/dot) */
-  type: null,
-
-  /** Known files required to include (in order) */
-  files: null,
+  handlers: null,
 
   /** Requirements for the files loaded. */
   requirements: null,
@@ -191,14 +201,19 @@ Combiner.prototype = {
   /** Order of files to reconstruct */
   order: null,
 
-  /** Already read */
+  /** @type {Object} absolute to data about the cached file content */
   cache: null,
 
-  /** Flag denoting whether or not a readFiles() call is executing */
-  isReading: false,
+  /**
+   * Appies the handlers, presumably after a call to parseHandlers()
+   * has taken place. The purpose is to register the endpoints on the express
+   * app.
+   *
+   * @return {[type]} [description]
+   */
+  applyHandlers: function() {
 
-  /** Reading state; some variables to access state between nested calls */
-  readState: null,
+  },
 
   /**
    * This bit of code loads the files and their dependencies into the
@@ -400,6 +415,115 @@ Combiner.prototype = {
   },
 
   /**
+   * This method examines the supplied handlers and normalizes their
+   * structurs for ease of use later. Handler formats are as follows
+   *
+   *     'endpoint': {
+   *       extensions: ['.array','.of','.file','.extensions'],
+   *       middleware: [middleware, references, array],
+   *       method: 'HTTP method',
+   *       roots: [
+   *         {
+   *           type: Combiner.NETWORK or Combiner.FILE_SYSTEM,
+   *           path: '/relative/path/to/files/with/extensions/',
+   *           prefix: '/alternative/absolute/path/to/file/directory/',
+   *
+   *           protocol: ...,    |\
+   *           slashes: ...,     | \
+   *           auth: ...,        |  \
+   *           host: ...,        |   \
+   *           port: ...,        |    } Network Default Overrides
+   *           hostname: ...,    |   /
+   *           hash: ...,        |  /
+   *           search: ...,      | /
+   *           query: ...        |/
+   *         }
+   *       ]
+   *     }
+   */
+  parseHandlers: function() {
+    // Start off by copying the supplied config.handlers object
+    this.handlers = this.config.handlers || {};
+
+    // Known methods (see http://expressjs.com/api.html#app.METHOD)
+    var methods = new RegExp('(' + ([
+      'checkout', 'connect', 'copy', 'delete', 'get', 'head', 'lock',
+      'merge', 'mkactivity', 'mkcol', 'move', 'm-search', 'notify',
+      'options', 'patch', 'post', 'propfind', 'proppatch', 'put',
+      'report', 'search', 'subscribe', 'trace', 'unlock', 'unsubscribe'
+    ].join('|')) + ')', 'i');
+
+    this.handlers.forEach((function(handler, index, array) {
+      // Drop the handler if there aren't any extensions to look for
+      if (isA(handler.extensions, Array) && handler.extensions.length === 0) {
+        array.splice(index, 1);
+        return;
+      }
+
+      // If no middleware are supplied, create an empty array
+      if (!handler.middleware) {
+        handler.middleware = [];
+      }
+
+      // If we received a single function middleware, wrap it
+      if (isA(handler.middleware, Function)) {
+        handler.middleware = [handler.middleware];
+      }
+
+      // Handler methods are presumed to be one of the known values supported
+      // by Express.
+      if (!handler.method || !methods.test(handler.method)) {
+        handler.method = "get";
+      }
+
+      // Convert to lowercase now for ease of use later
+      handler.method = handler.method.toLowerCase();
+
+      // Process the underlying roots for each handler. If the value is a
+      // string, convert it to a proper object with defaults. If the value
+      // is of type NETWORK, ensure all the URL properties we might want or
+      // need are present.
+      handler.roots.forEach((function(root, rootIndex, rootArray) {
+        if (isA(root, String)) {
+          rootArray[rootIndex] = {
+            type: Combiner.FILE_SYSTEM,
+            path: root
+          };
+          return;
+        }
+
+        if (root.type === Combiner.FILE_SYSTEM) {
+          if (root.prefix) {
+            root.prefix = pth.resolve(root.prefix);
+          }
+        }
+
+        if (root.type === Combiner.NETWORK) {
+          var temp, stringForm;
+          extend(true, temp, this.networkDefaults, root, {pathname: root.path});
+          stringForm = URL.format(temp);
+          extend(true, rootArray[rootIndex], URL.parse(stringForm), root);
+        }
+      }).bind(this));
+    }).bind(this));
+  },
+
+  /**
+   * Assumed to be called using apply/call and being bound to the Combiner
+   * instance in question, this function will look through the config for
+   * a networkDefaults property. If none are found, the defaults are used.
+   */
+  parseNetworkDefaults: function() {
+    var networkDefaults = extend(
+      true,
+      Combiner.NETWORK_DEFAULTS,
+      this.config.networkDefaults || {}
+    );
+    var stringForm = URL.format(networkDefaults);
+    this.networkDefaults = URL.parse(stringForm);
+  },
+
+  /**
    * A payload is a chunk of data stored about a particular file or
    * resource. These are created in the {@link #cacheFile} method. This
    * method builds up a flattened list of payload objects for each top
@@ -567,7 +691,19 @@ Combiner.prototype = {
  * The Combiner "class" static variables and methods
  * @type {Combiner}
  */
-extend(Combiner, {
+extend(true, Combiner, {
+  /** Used when defining handler roots that can be loaded directly */
+  FILE_SYSTEM: 'File system path',
+
+  /** Used when defining handler roots that need to be requested */
+  NETWORK: 'Network path; uses request',
+
+  /** HTTP non-secure protocol constant for network fetching */
+  HTTP: 'http:',
+
+  /** HTTPS secure protocol constant for network fetching */
+  HTTPS: 'https:',
+
   /** Known extension type for JavaScript (JS) files */
   JS: ".js",
 
@@ -586,7 +722,13 @@ extend(Combiner, {
   /** Default config properties for Combiner instances */
   DEFAULTS: {
     suffix: ".packaged",
-    output: "concatted"
+  },
+
+  /** Network defaults; supports all properties of node URL objects */
+  NETWORK_DEFAULTS: {
+    protocol: 'http:',
+    hostname: 'localhost',
+    port: process.env.PORT || 3000
   },
 
   /** Regular expression used to parse files for requirements "arrays" */
@@ -627,6 +769,15 @@ extend(Combiner, {
     return result;
   },
 
+  /**
+   * Retrieve the URI for a given type. This code removes the project root from
+   * the root url for a given type, which should, usually, provide a propper
+   * relative uri for a given type.
+   *
+   * @param  {String} type extension type; i.e. '.js' or '.css'
+   * @param  {Object} config Combiner configuration object
+   * @return {String} a relative uri for the given type
+   */
   getUriForType: function(type, config) {
     return Combiner.getRootForType(type, config)
         .replace(config.root, '');
@@ -717,453 +868,7 @@ extend(Combiner, {
 
     return results;
   }
+
 });
 
-function SASSPreprocessor(config) {
-  sassLog('Registering SASSPreprocessor');
-
-  return function _SASSPreprocessor(req, res, next) {
-    sassLog('[SASSPreprocessor] Processing sass/scss files');
-
-    if (!config.scssRoot && !config.sassRoot) {
-      return next();
-    }
-
-    var sass = require('node-sass');
-    var exts = ['.sass', '.scss'];
-    var ext = Combiner.getType(req.url);
-
-    if (exts.indexOf(ext) === -1) {
-      sassLog('Skipping %s', req.url);
-      return next();
-    }
-
-    var root, prefix, file, filePath, exists;
-
-    root = Combiner.getRootForType(ext, config);
-    prefix = ext.toLowerCase() === '.scss'
-        ? config.scssPrefix || config.prefix || ''
-        : config.sassPrefix || config.prefix || '';
-    file = req.url.replace(prefix, '');
-    filePath = pth.join(root, file);
-
-    sassLog('[URL] %s', req.url);
-    sassLog('[Root] %s', root);
-    sassLog('[Prefix] %s', prefix);
-    sassLog('[File] %s', file);
-    sassLog('[FilePath] %s', filePath);
-
-    fs.exists(filePath, function(fileExists) {
-      sassLog('%j', fileExists);
-      if (!fileExists) {
-        sassLog('%s cannot be found', filePath);
-        return next();
-      }
-
-      sass.render({ file: filePath }, function(err, results) {
-        if (err) {
-          sassLog('%s', JSON.stringify(err, null, "  "));
-        }
-        else {
-          var SASSCache = Combiner.getGlobalCache(file);
-          SASSCache[file] = {
-            body: results.css.toString(),
-            root: root,
-            path: filePath,
-            prefix: prefix,
-            file: file
-          };
-
-          res.locals.CSS = res.locals.CSS || [];
-          res.locals.CSS.push(file);
-        }
-
-        return next();
-      });
-    })
-  }
-}
-
-function LESSPreprocessor(config) {
-  lessLog('Registering LESSPreprocessor');
-
-  return function _lessPreprocessor(req, res, next) {
-    lessLog('[LESSPreprocessor] Processing less files');
-
-    if (!config.lessRoot) {
-      lessLog('[LESSPreprocessor] No lessRoot defined. Bailing');
-      return next();
-    }
-
-    var less = require('less');
-    var exts = ['.less'];
-    var ext = Combiner.getType(req.url);
-
-    if (exts.indexOf(ext) === -1) {
-      lessLog('Skipping %s as %j is not in %j', req.url, ext, exts);
-      return next();
-    }
-
-    var root, prefix, file, filePath, exists;
-
-    root = config.lessRoot;
-    prefix = config.lessPrefix || config.prefix || '';
-    file = req.url.replace(prefix, '');
-    filePath = pth.join(root, file);
-
-    lessLog('[URL] %s', req.url);
-    lessLog('[Root] %s', root);
-    lessLog('[Prefix] %s', prefix);
-    lessLog('[File] %s', file);
-    lessLog('[FilePath] %s', filePath);
-
-    fs.exists(filePath, function(fileExists) {
-      lessLog('%j', fileExists);
-      if (!fileExists) {
-        lessLog('%s cannot be found', filePath);
-        return next();
-      }
-
-      fs.readFile(filePath, function(err, contents) {
-        if (err) {
-          lessLog('%s', JSON.stringify(err, null, "  "));
-          return next();
-        }
-
-        less.render(
-          contents.toString(),
-          {
-            sourceMap: {sourceMapFileInline: true}
-          }
-        ).then(function(output) {
-          var LESSCache = Combiner.getGlobalCache(file);
-          LESSCache[file] = {
-            body: output.css,
-            root: root,
-            path: filePath,
-            prefix: prefix,
-            file: file
-          };
-
-          res.locals.CSS = res.locals.CSS || [];
-          res.locals.CSS.push(file);
-
-          trace('res.locals.CSS %j', res.locals.CSS);
-
-          return next();
-        });
-      });
-    });
-  }
-}
-
-/**
- * The page name combiner is a piece of middleware that automatically combines
- * any JS and CSS into two separate packages. The names of the generated files
- * are automatically determined by the route name. This can be overridden by
- * specifying an object context with a specified url property. The middleware
- * generator NamedCombiner(name) will do this automatically.
- *
- * @param req the request object as supplied by Node.js
- * @param res the response object as supplied by Node.js
- * @param next the next middleware in the chain
- */
-function PageNameCombiner(req, res, next) {
-  var defExtension, pageExtension, pageName, uriToPage, url,
-      jsPageName, jsPagePath, jsCombiner, jsTask,
-      cssPageName, cssPagePath, cssCombiner, cssTask, mkdirp;
-
-  mkdirp = require('mkdirp');
-  url = this.url || req.url;
-  defExtension = '.' + req.app.get('view engine');
-  pageExtension = Combiner.getType(url) || defExtension;
-  pageName = url === '/' ? 'index'
-      : pth.basename(url).replace(pageExtension, '');
-
-  // remove query string if present.
-  pageName = pageName.replace(/\?.*/, "");
-
-  uriToPage = pth.dirname(url);
-
-  jsPageName = pageName;
-  jsPagePath = pth.join(jsRoot, uriToPage, 'pages');
-  mkdirp.sync(jsPagePath);
-  jsCombiner = req.app.jsCombiner || new Combiner(extend({},
-    JSCombiner.baseConfig,
-    {
-      type: Combiner.JS,
-      output: jsPageName,
-      outputPath: jsPagePath
-    }
-  ));
-
-  jsTask = jsCombiner.readFiles(
-    [pth.join('pages', jsPageName + Combiner.JS)],
-    res.locals
-  );
-
-  cssPageName = pageName;
-  cssPagePath = pth.join(cssRoot, uriToPage, 'pages');
-  mkdirp.sync(cssPagePath);
-  cssCombiner = req.app.cssCombiner || new Combiner(extend({},
-    CSSCombiner.baseConfig,
-    {
-      type: Combiner.CSS,
-      output: cssPageName,
-      outputPath: cssPagePath
-    }
-  ));
-
-  cssTask = cssCombiner.readFiles(
-    [pth.join('pages', cssPageName + Combiner.CSS)],
-    res.locals
-  );
-
-  Q.all([jsTask, cssTask]).done(function() {
-    Q.all([
-      jsCombiner.writeOutput(),
-      cssCombiner.writeOutput()
-    ]).then(function(combined) {
-      res.locals.pageJS = combined[0].uri;
-      res.locals.pageCSS = combined[1].uri;
-      next();
-    });
-  });
-};
-
-/**
- * A utility function that returns a PageNameCombiner middleware function that
- * has a named url bound to the name that is supplied as the paramter to this
- * function.
- *
- * This is really useful for routes that have parameterized values or that do
- * not neatly resolve to a file name.
- *
- * @param name the url to bind the returned PageNameCombiner middleware with
- */
-function NamedCombiner(name) {
-  return PageNameCombiner.bind({
-    url: name
-  });
-}
-
-/**
- * A JavaScript middleware that wraps a Combiner instance. This is used by the
- * PageNameCombiner but can be used individually as well. Subsequent requests
- * that should skip this middleware for any particular reason can specify the
- * URL parameter "[?&]skipCombiner=true".
- *
- * @param req the request object as supplied by Node.js
- * @param res the response object as supplied by Node.js
- * @param next the next middleware in the chain
- */
-function JSCombiner(req, res, next) {
-  var skipCombiner = req.query.skipCombiner;
-  if (skipCombiner && skipCombiner.toLowerCase() === "true") {
-    return next();
-  }
-
-  var config = JSCombiner.baseConfig || {},
-      jsPageName = req.params[0],
-      jsCombiner = req.app.jsCombiner || new Combiner(config);
-
-  if (pth.basename(req.url).indexOf(jsCombiner.config.suffix) === -1) {
-    jsCombiner.readFiles([jsPageName], res.locals).then(function() {
-      res.set('Content-Type', 'text/javascript');
-      res.send(jsCombiner.output);
-    });
-  }
-  else {
-    return next();
-  }
-};
-
-/**
- * A CSS middleware that wraps a Combiner instance. This is used by the
- * PageNameCombiner but can be used individually as well. Subsequent requests
- * that should skip this middleware for any particular reason can specify the
- * URL parameter "[?&]skipCombiner=true".
- *
- * @param req the request object as supplied by Node.js
- * @param res the response object as supplied by Node.js
- * @param next the next middleware in the chain
- */
-function CSSCombiner(req, res, next) {
-  var skipCombiner = req.query.skipCombiner;
-  if (skipCombiner && skipCombiner.toLowerCase() === "true") {
-    return next();
-  }
-
-  var types = [Combiner.SASS, Combiner.SCSS, Combiner.LESS, Combiner.CSS];
-  var type = Combiner.getType(req.url);
-  var config = extend({}, CSSCombiner.baseConfig || {}, {type: type});
-  var cssPageNames = res.locals.CSS
-      ? res.locals.CSS
-      : [req.params[0]];
-  var cssCombiner = req.app.cssCombiner || new Combiner(config);
-
-  cssLog('[PageNames] %s', cssPageNames);
-  cssLog('[Params] %j', req.params);
-
-  if (types.indexOf(type) !== -1) {
-    cssLog('[Reading Files] %s', cssPageNames);
-    cssCombiner.readFiles(cssPageNames, res.locals).then(function() {
-      res.set('Content-Type', 'text/css');
-      res.send(cssCombiner.output);
-    });
-  }
-  else {
-    return next();
-  }
-};
-
-/**
- * This function sets up a route, which by default is anything under
- * /js/, that recursively will build up a combined package based on the
- * various @require [] values in comments at the top of each file.
- *
- * If pathName is supplied as a string, the resulting regular expression
- * would appear to be an escaped version of "/pathName/(.*)" If this isn't
- * sufficient, passing in your own regular expression with the first
- * capture group representing the file can be supplied.
- *
- * @param {Express} express an instance of the express app server
- * @param {Function|Array} additionalMiddleware a function or an array of
- * functions of extra middleware to invoke on each call to the created route
- * @param {String|RegExp} pathName a string or regular expression (see above)
- */
-function handleJS(express, additionalMiddleware, pathName) {
-  var middleware;
-  var regex = isA(RegExp, pathName)
-      ? pathName
-      : new RegExp("^\\/" + (pathName || "js") + "\\/(.*)$");
-
-  if (additionalMiddleware) {
-    middleware = [];
-
-    if (isA(Function, additionalMiddleware)) {
-      middleware.push(middleware);
-    }
-    else if (isA(Array, additionalMiddleware)) {
-      middleware = additionalMiddleware;
-    }
-
-    express.get.apply(express, [regex].concat([middleware, JSCombiner]));
-  }
-  else {
-    express.get(regex, JSCombiner);
-  }
-}
-
-/**
- * This function sets up a route, which by default is anything under
- * /css/, that recursively will build up a combined package based on the
- * various @require [] values in comments at the top of each file.
- *
- * If pathName is supplied as a string, the resulting regular expression
- * would appear to be an escaped version of "/pathName/(.*)" If this isn't
- * sufficient, passing in your own regular expression with the first
- * capture group representing the file can be supplied.
- *
- * @param {Express} express an instance of the express app server
- * @param {Function|Array} additionalMiddleware a function or an array of
- * functions of extra middleware to invoke on each call to the created route
- * @param {String|RegExp} pathName a string or regular expression (see above)
- */
-function handleCSS(express, additionalMiddleware, pathName) {
-  debug('Registering CSS combiner');
-
-  var regex = isA(RegExp, pathName)
-      ? pathName
-      : new RegExp("^\\/" + (pathName || "css") + "\\/(.*)$");
-
-  if (additionalMiddleware) {
-    var middleware = [];
-
-    if (isA(Function, additionalMiddleware)) {
-      middleware.push(additionalMiddleware);
-    }
-    else if (isA(Array, additionalMiddleware)) {
-      middleware = additionalMiddleware;
-    }
-
-    express.get.apply(express, [regex].concat([middleware, CSSCombiner]));
-  }
-  else {
-    express.get(regex, CSSCombiner);
-  }
-}
-
-/**
- * This function sets up two routes, which by default are anything under
- * /js/ and /css/, that recursively will build up combined packages based
- * on the various @require [] values in comments at the top of each file.
- *
- * If jsPath or cssPath is supplied as a string, the resulting regular
- * expression would appear to be an escaped version of "/pathName/(.*)"
- * If this isn't sufficient, passing in your own regular expression with
- * the first capture group representing the file can be supplied.
- *
- * @param {Express} express an instance of the express app server
- * @param {Function|Array} additionalMiddleware a function or an array of
- * functions of extra middleware to invoke on each call to the created route
- * @param {String|RegExp} jsPath a string or regular expression (see above)
- * @param {String|RegExp} cssPath a string or regular expression (see above)
- * @param jsPath an alternate value to use instead of 'js' when setting
- *     up the route
- * @param cssPath an alternate value to use instead of 'css' when setting
- *     up the route
- */
-function handleScriptAndStyle(express, additionalMiddleware, jsPath, cssPath) {
-  debug('Registering JavaScript Combiner');
-  handleJS(express, additionalMiddleware, jsPath);
-  debug('Registering CSS Combiner');
-  handleCSS(express, additionalMiddleware, cssPath);
-}
-
-/**
- * This function takes a config object that defines the base config for the
- * JSCombiner and CSSCombiner middleware. However when requiring the combiner
- * middleware calling this function is necessary for everything else to work
- * as intended. An example is as follows:
- * <code>
- *   var Path = require('path'),
- *       app = require('express')(),
- *       ROOT = Path.dirname(__filename),
- *       combiner = require('./middleware/combiner.js')({
- *         root: Path.join(ROOT, 'public'),
- *         jsRoot: Path.join(ROOT, 'public', 'js'),
- *         cssRoot: Path.join(ROOT, 'public', 'css'),
- *         express: app
- *       });
- * </code>
- */
-module.exports = function(config) {
-  CSSCombiner.baseConfig = config;
-  JSCombiner.baseConfig = config;
-
-  // Middleware
-  this.SASSPreprocessor = SASSPreprocessor;
-  this.LESSPreprocessor = LESSPreprocessor;
-  this.CSSCombiner = CSSCombiner;
-  this.JSCombiner = JSCombiner;
-  this.PageNameCombiner = PageNameCombiner;
-  this.NamedCombiner = NamedCombiner;
-  this.Combiner = Combiner;
-
-  // Register functions
-  this.handleCSS = handleCSS;
-  this.handleJS = handleJS;
-  this.handleScriptAndStyle = handleScriptAndStyle;
-
-  this.root = root = config.root || process.cwd();
-  this.jsRoot = jsRoot = config.jsRoot || pth.join(this.root, 'js');
-  this.jsRootUri = this.jsRoot.replace(this.root, '');
-  this.cssRoot = cssRoot = config.cssRoot || pth.join(this.root, 'css');
-  this.cssRootUri = this.cssRoot.replace(this.root, '');
-
-  this.express = config.express || null;
-  extend(moduleState, this);
-
-  return this;
-}
+module.exports = Combiner;
