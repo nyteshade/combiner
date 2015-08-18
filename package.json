@@ -2,7 +2,7 @@
   "name": "combiner",
   "version": "1.0.0",
   "description": "A piece of middleware for node/express servers that combines dependent JavaScript and CSS into single files as needed for a given page",
-  "main": "lib.js",
+  "main": "Combiner.js",
   "dependencies": {
     "ansi-regex": "^2.0.0",
     "ansi-styles": "^2.1.0",
@@ -60,6 +60,7 @@
     "stringstream": "^0.0.4",
     "strip-ansi": "^3.0.0",
     "supports-color": "^2.0.0",
+    "synchronize": "^0.9.14",
     "tough-cookie": "^2.0.0",
     "tunnel-agent": "^0.4.1",
     "util-deprecate": "^1.0.1",
