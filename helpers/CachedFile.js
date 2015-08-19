@@ -77,8 +77,6 @@ function CachedFile(filePath, synchronous, plugins) {
   this.plugins = plugins || [];
   this.synchronous = synchronous;
 
-  debug('using plugins %j', this.plugins);
-
   CachedFile.cache[this.path] = this;
 
   this.data = null;

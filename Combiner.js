@@ -141,7 +141,16 @@ Combiner.prototype = {
    */
   applyHandlers: function() {
     var keys = Object.keys(this.handlers);
-    var key, value, i, isValid, endpoint, regexEndpoint, handlerFn, args, fn;
+    var key;
+    var value;
+    var i;
+    var isValid;
+    var endpoint;
+    var regexEndpoint;
+    var handler;
+    var handlerFn;
+    var args;
+    var fn;
 
     for (i = 0, key = keys[0]; i < keys.length; i++, key = keys[i]) {
       handler = this.handlers[key];

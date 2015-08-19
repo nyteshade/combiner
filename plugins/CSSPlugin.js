@@ -59,14 +59,17 @@ module.exports = function __generateCSSPlugin(config) {
     var dirname = path.dirname(this.path);
     var searchStr, valueStr;
     var cfg = CSSPlugin.config;
+    var replacements = [].concat(cfg.replacements);
 
-    for (var i = 0; i < cfg.replacements.length; cfg++) {
-      if (!isA(Array, cfg.replacements[i]) || cfg.replacements[i].length < 2) {
+    for (var i = 0; i < replacements.length; i++) {
+      if (replacements.length < 2) {
+        debug('Skipping replacement %j as it is missing enough params',
+            replacements[i]);
         continue;
       }
 
-      searchStr = cfg.replacements[i][0];
-      valueStr = cfg.replacements[i][1].replace(/@path/g, dirname);
+      searchStr = replacements[i][0];
+      valueStr = replacements[i][1].replace(/@path/g, dirname);
       data = data.replace(searchStr, valueStr);
 
       debug('CSSPlugin replacing %j with %s', searchStr, valueStr);
