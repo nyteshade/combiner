@@ -30,6 +30,7 @@ var extend = require('extend');
 var indent = require('indent-string');
 var csi = require('node-csi');
 var isA = require('isa-lib')().isA;
+var path = require('path');
 var debug = require('debug')('combiner:CSSPlugin');
 
 /**

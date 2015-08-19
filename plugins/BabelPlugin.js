@@ -82,7 +82,7 @@ module.exports = function __generateBabelPlugin(config) {
         csi.FG.RESET,
         error.message,
         csi.HIFG.BLACK,
-        indent(error.stack, ' ', 2),
+        indent(error.stack, ' ', 4),
         csi.RESET
       );
       debug('Skipping transpile');

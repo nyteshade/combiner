@@ -247,7 +247,7 @@ CachedFile.prototype = Object.create({}, {
             indent(error.stack, ' ', 2),
             csi.ON.BOLD,
             csi.HIFG.BLACK,
-            indent(this.plugins[i].toString(), ' ', 2),
+            indent(this.plugins[i].toString(), ' ', 4),
             csi.RESET
           );
         }
