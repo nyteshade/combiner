@@ -33,12 +33,37 @@
 
 var fs = require('fs');
 var path = require('path');
-var isA = require('isa-lib')().isA;
 var Q = require('q');
 var csi = require('node-csi');
+var indent = require('indent-string');
 var debug = require('debug')('combiner:cachedfile');
 
-var cache = {};
+/**
+ * The simple but elegant cache backing for CachedFile. This object is
+ * responsible for storing the cached files on the file system. It may not
+ * however, survive multiple reqiure calls.
+ *
+ * @type {Object}
+ */
+var cachedFileCache = {};
+
+/**
+ * A function that retrieves the cache to be used for CachedFile. By default
+ * it returns the local instance of cache. In many cases this will be more than
+ * sufficient for a users needs. If however, the cache should be shared or
+ * located elsewhere, calling CachedFile.setCacheGetter will overwrite the
+ * module's _getCache function with one of the users choosing.
+ *
+ * It is worth noting that failure to provide a working function that returns
+ * an object capable of being used as a cache may cause unexpected and difficult
+ * to solve bugs throughout the application. Overwrite this function with care
+ *
+ * @return {Object} the cache object used by CacehdFile
+ */
+var _originalGetCache;
+var _getCache = _originalGetCache = function __defaultCacheGetter() {
+  return cachedFileCache;
+}
 
 /**
  * By default the file root is the same as that of the current working
@@ -50,10 +75,11 @@ function CachedFile(filePath, synchronous, plugins) {
   this.deferreds = {};
   this.path = filePath;
   this.plugins = plugins || [];
+  this.synchronous = synchronous;
 
   debug('using plugins %j', this.plugins);
 
-  cache[this.path] = this;
+  CachedFile.cache[this.path] = this;
 
   this.data = null;
   this.mtime = Number.MAX_VALUE;
@@ -76,13 +102,17 @@ CachedFile.prototype = Object.create({}, {
     value: function _readFile(synchronous) {
       var startTime = Date.now();
       var self = this;
+      var cache = CachedFile.cache;
+
+      // Use the saved synchronized state if none is supplied
+      synchronous = synchronous || this.synchronous;
 
       this.deferreds.file = Q.defer();
       this.deferreds.stat = Q.defer();
 
       if (!!synchronous) {
         var mtime = new Date(fs.statSync(self.path).mtime).getTime();
-        var useCache = cache[self.path].mtime <= mtime;
+        var useCache = cache[self.path] && cache[self.path].mtime <= mtime;
 
         self.data = useCache
           ? cache[self.path].data
@@ -108,11 +138,14 @@ CachedFile.prototype = Object.create({}, {
         var mtime = statErr
           ? Number.MAX_VALUE
           : new Date(stat.mtime).getTime();
+        var useCache = cache[self.path] && cache[self.path].mtime <= mtime;
+        var cache = CachedFile.cache;
 
-        if (!cache[self.path] || (cache[self.path].mtime > mtime)) {
+        if (!useCache) {
           fs.readFile(self.path, function(readErr, file) {
             if (readErr) { self.deferreds.file.reject(readErr); }
 
+            // Only run the plugins on non-cached data
             self.data = self.runPlugins(file.toString(), !!synchronous);
             self.mtime = mtime;
 
@@ -206,13 +239,15 @@ CachedFile.prototype = Object.create({}, {
         }
         catch (error) {
           debug(
-            'Skipping plugin %d due to %s\n%s\n%s%s%s%s\n',
+            'Skipping plugin %d due to %s%s%s\n%s\n%s%s%s%s\n',
             i,
+            csi.HIFG.WHITE,
             error.message,
-            error.stack,
+            csi.RESET,
+            indent(error.stack, ' ', 2),
             csi.ON.BOLD,
             csi.HIFG.BLACK,
-            this.plugins[i],
+            indent(this.plugins[i].toString(), ' ', 2),
             csi.RESET
           );
         }
@@ -223,6 +258,54 @@ CachedFile.prototype = Object.create({}, {
     enumerable: true,
     configurable: true,
     writable: true
+  }
+});
+
+/**
+ * This property getter returns the value of the hidden _getCache() function
+ * when accessed. This works even if _getCache() is replaced by the static
+ * CachedFile.setCacheGetter()
+ *
+ * @return {Object} the result of the internal _getCache() function call.
+ */
+Object.defineProperties(CachedFile, {
+  cache: {
+    enumerable: true,
+    configurable: false,
+    get: function __cachedfile_cache_getter_getter() {
+      return _getCache();
+    }
+  },
+
+  /**
+   * This function swaps out the function used throughout the 'class' in order to
+   * cache the loaded files. The supplied function to use in its place must return
+   * a writable object or else unexpected errors may occur.
+   *
+   * @param {Function} fn a function to replace the default getCache
+   * implementation
+   */
+  setCacheGetter: {
+    value: function __cachedfile_cache_getter_setter(fn) {
+      _getCache = fn;
+    },
+    enumerable: true,
+    configurable: false,
+    writable: false
+  },
+
+  /**
+   * This function resets the default access to the _getCache function making
+   * the CachedFile.cache property also return the original values in the case
+   * that setCacheGetter() was invoked with undesireable effects.
+   */
+  resetCacheGetter: {
+    value: function __cachedfile_cache_getter_resetter() {
+      _getCache = _originalGetCache;
+    },
+    enumerable: true,
+    configurable: false,
+    writable: false
   }
 });
 

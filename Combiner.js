@@ -95,6 +95,12 @@ function Combiner(app, config) {
   // Store the express application variable
   this.app = app;
 
+  // Create a value in app.locals for our CachedFile cache
+  this.app.locals.cachedFileCache = {};
+
+  // Update the CachedFile cache
+  CachedFile.setCacheGetter(function () { return app.locals.cachedFileCache; });
+
   // Extend the default configuration with the provided config object if one
   // is present, or the files parameter if it is an object.
   this.config = extend(true, {}, Combiner.DEFAULTS, config || {});
@@ -227,8 +233,7 @@ Combiner.prototype = {
 
     // Ensure we have order :) ...and a cachedFile map as promised
     valueStore.order = valueStore.order || [];
-    valueStore.cachedFiles = valueStore.cachedFiles || {};
-    valueStore.promises = [];
+    valueStore.cachedFiles = CachedFile.cache || {};
 
     // Loop over the relativePath, prepending any supplied prefix or the project
     // root, plus the path specified in the root and finally the relative path.
@@ -259,9 +264,16 @@ Combiner.prototype = {
         return;
       }
 
-      debug('handler.plugins %j', handler.plugins);
-      var cachedFile = new CachedFile(assetName, true, handler.plugins);
-      valueStore.cachedFiles[assetName] = cachedFile;
+      var cachedFile = CachedFile.cache[assetName];
+      if (cachedFile) {
+        debug('Retrieving previously cached file %s', assetName);
+        cachedFile.readFile();
+      }
+      else {
+        debug('Fetching and caching %s', assetName);
+        debug('Using plugins ', handler.plugins);
+        cachedFile = new CachedFile(assetName, true, handler.plugins);
+      }
 
       // Check contents for requirements; defaults to Combiner.REQUIRE
       var requirements = Combiner.parseCommentArray(cachedFile.data);
