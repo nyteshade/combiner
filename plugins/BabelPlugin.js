@@ -74,7 +74,7 @@ module.exports = function __generateBabelPlugin(config) {
 
     debug('Transpiling ES2015 code...')
     try {
-      return babel.transform(data, babelCfg);
+      return babel.transform(data, babelCfg).code;
     }
     catch (error) {
       debug('%sERROR%s: %s\n%s%s%s',
