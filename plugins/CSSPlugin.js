@@ -71,8 +71,6 @@ module.exports = function __generateCSSPlugin(config) {
       searchStr = replacements[i][0];
       valueStr = replacements[i][1].replace(/@path/g, dirname);
 
-      console.log(csi.FG.RED, isA(data), csi.RESET);
-
       data = data.replace(searchStr, valueStr);
 
       debug('CSSPlugin replacing %j with "%s"', searchStr, valueStr);
