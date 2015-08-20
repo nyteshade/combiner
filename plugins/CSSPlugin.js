@@ -70,9 +70,12 @@ module.exports = function __generateCSSPlugin(config) {
 
       searchStr = replacements[i][0];
       valueStr = replacements[i][1].replace(/@path/g, dirname);
+
+      console.log(csi.FG.RED, isA(data), csi.RESET);
+
       data = data.replace(searchStr, valueStr);
 
-      debug('CSSPlugin replacing %j with %s', searchStr, valueStr);
+      debug('CSSPlugin replacing %j with "%s"', searchStr, valueStr);
     }
 
     return data;
@@ -125,7 +128,7 @@ module.exports = function __generateCSSPlugin(config) {
       enumerable: true,
       configurable: false,
       get: function __getDefaultReplacer() {
-        return [ new RegExp("(['\"])(\.\.?)\/", 'g'), '$1@path/$2'];
+        return [ new RegExp("(['\"])(\.\.?)\/", 'g'), '$1@path/$2/'];
       }
     }
   });

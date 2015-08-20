@@ -27,8 +27,6 @@
  * {
  *   projectRoot: '/absolute/path/to/project/root/',
  *
- *   isMiddleware: true/false,
- *
  *   networkDefaults: {
  *     protocol: Combiner.(HTTP|HTTPS)
  *     hostname: "defaultHostname",
@@ -37,10 +35,9 @@
  *
  *   handlers: {
  *     '/scripts/': {
- *       method: 'GET',
  *       extensions: ['.js', '.es6'],
  *       middleware: [BABELPreprocessor],
- *       outputMimeType: 'text/javascript',
+ *       outputMimeType: 'text/javascript',   // all extensions this type
  *       fileSeparator: '\n;',
  *       fn: JSHandler,
  *       roots: [
@@ -53,11 +50,28 @@
  *     },
  *
  *     '/css/': {
- *       method: 'get',
  *       extensions: ['.css', '.less', '.scss', '.sass'],
  *       middleware: [],
  *       plugins: [LESSPlugin, SASSPlugin],
  *       roots: ['less', 'scss', 'public/stylesheets']
+ *     },
+ *
+ *     '/fonts/': {
+ *       extensions: ['.woff', '.woff2', '.ttf', '.otf', '.svg', '.eot'],
+ *       roots: ['fonts'],
+ *       outputMimeTypes: {
+ *         '.woff': 'application/font-woff',
+ *         '.woff2': 'application/font-woff2',
+ *         '.ttf': 'application/font-ttf',
+ *         '.otf': 'application/font-otf',
+ *         '.svg': 'image/svg+xml',
+ *         '.eot': 'application/vnd.ms-fontobject',
+ *         '*': 'text/plain'
+ *       },
+ *       responseHeaders: {
+ *         'Expires': 'Thu, 01 Dec 1994 16:00:00 GMT',
+ *         'ETag': '737060cd8c284d8af7ad3082f209582d'
+ *       }
  *     }
  *   }
  * }
@@ -107,9 +121,6 @@ function Combiner(app, config) {
 
   // Store and resolve the project rootz
   this.projectRoot = pth.resolve(config.projectRoot);
-
-  // Setup switch for whether or not this is in middleware mode
-  this.isMiddleware = config.isMiddleware || false;
 
   // Parse and normalize the network defaults
   this.parseNetworkDefaults();
@@ -210,7 +221,8 @@ Combiner.prototype = {
       valueStore.cachedFiles,
       req,
       res,
-      next
+      next,
+      valueStore
     );
   },
 
@@ -242,7 +254,7 @@ Combiner.prototype = {
 
     // Ensure we have order :) ...and a cachedFile map as promised
     valueStore.order = valueStore.order || [];
-    valueStore.cachedFiles = CachedFile.cache || {};
+    valueStore.cachedFiles = valueStore.cachedFiles || {};
 
     // Loop over the relativePath, prepending any supplied prefix or the project
     // root, plus the path specified in the root and finally the relative path.
@@ -269,7 +281,8 @@ Combiner.prototype = {
     // files to work with.
     existingAssets.forEach((function _getAsset(assetName, index, array) {
       if (valueStore.cachedFiles[assetName]) {
-        debug('Skipping %s as it is already loaded and processed.');
+        debug('Skipping %s as it is already loaded and processed.', assetName);
+        debug(valueStore.cachedFiles)
         return;
       }
 
@@ -283,6 +296,9 @@ Combiner.prototype = {
         debug('Using plugins ', handler.plugins);
         cachedFile = new CachedFile(assetName, true, handler.plugins);
       }
+
+      // Update reference in request valueStore.cachedFile list
+      valueStore.cachedFiles[assetName] = cachedFile;
 
       // Check contents for requirements; defaults to Combiner.REQUIRE
       var requirements = Combiner.parseCommentArray(cachedFile.data);
@@ -468,7 +484,6 @@ Combiner.prototype = {
     );
     var stringForm = URL.format(networkDefaults);
     this.networkDefaults = URL.parse(stringForm);
-    debug('Network Defaults %j', this.networkDefaults);
   },
 
   /**
@@ -480,22 +495,69 @@ Combiner.prototype = {
    * @param  {[type]} cachedFiles [description]
    * @return {[type]}             [description]
    */
-  writeOutput: function(handler, order, cachedFiles, req, res, next) {
+  writeOutput: function(
+    handler,
+    order,
+    cachedFiles,
+    req,
+    res,
+    next,
+    valueStore
+  ) {
     // Build our ordered output string
     var output = order.map(function(assetName, index, array) {
       return cachedFiles[assetName].data;
     }).join(handler.fileSeparator || '');
 
-    // If we are not in middleware mode, write the contents to the response
-    if (!this.config.isMiddleware) {
-      if (isA(String, handler.outputMimeType)) {
-        res.set('Content-Type', handler.outputMimeType);
+    // Apply custom outputMimeTypes as defined in the handler.
+    if (isA(String, handler.outputMimeType)) {
+      res.set('Content-Type', handler.outputMimeType);
+    }
+    else if (isA(Object, handler.outputMimeTypes)) {
+      var types = Object.keys(handler.outputMimeTypes);
+      var ext = Combiner.getType(valueStore.assetName);
+      if (types.indexOf(ext) !== -1) {
+        res.set('Content-Type', handler.outputMimeTypes[ext]);
       }
-      return res.send(output);
+      else if (types.indexOf('*') !== -1) {
+        res.set('Content-Type', handler.outputMimeTypes['*']);
+      }
+    }
+
+    // Apply any specified response headers; while not advised, it is possible
+    // to override Content-Type in this manner.
+    if (isA(Object, handler.responseHeaders)) {
+      for (var headerName in handler.responseHeaders) {
+        if (/Content-Type/i.test(headerName)) {
+          debug('%sOverwriting content-type with %s%s',
+              csi.FG.RED, handler.responseHeaders[headerName], csi.RESET);
+        }
+        res.set(headerName, handler.responseHeaders[headerName]);
+      }
+    }
+
+    var zlib = require('zlib');
+    var raw = Combiner.getStream(output);
+
+    // Check to see if the browser is stating it can accept and deal with
+    // encoded formats
+    var acceptEncoding = req.headers['accept-encoding'];
+    if (!acceptEncoding) {
+      acceptEncoding = '';
+    }
+
+    // Based on the browsers statements, send either gzip, deflate or raw data
+    // to the client.
+    if (acceptEncoding.match(/\bgzip\b/)) {
+      res.set('Content-Encoding', 'gzip');
+      raw.pipe(zlib.createGzip()).pipe(res);
+    }
+    else if (acceptEncoding.match(/\bdeflate\b/)) {
+      res.set('Content-Encoding', 'deflate');
+      raw.pipe(zlib.createDeflate()).pipe(res);
     }
     else {
-      debug('Not yet implemented');
-      res.send('meh!');
+      raw.pipe(res);
     }
   }
 };
@@ -545,10 +607,25 @@ extend(true, Combiner, {
   },
 
   /** Regular expression used to parse files for requirements "arrays" */
-  REQUIRE: /(?:\/\/|\/\*|\s*\*\s*)*\**\s*@require\s*(\[([^\]]+)\])/g,
+  REQUIRE: /@require (\[([^\]]+)\])/g,
 
   /** Regular expression used to parse files for networkOnly "arrays" */
-  NET_ONLY: /(?:\/\/|\/\*|\s*\*\s*)*\**\s*@networkOnly\s*(\[([^\]]+)\])/g,
+  NET_ONLY: /@networkOnly (\[([^\]]+)\])/g,
+
+  /**
+   * A shortcut to produce a Readable stream from a string.
+   *
+   * @param  {String} string any String of text
+   * @return {ReadableStream} see https://nodejs.org/api/stream.html
+   */
+  getStream: function(string) {
+    var Readable = require('stream').Readable;
+    var stream = new Readable();
+    stream._read = function() {}
+    stream.push(string);
+    stream.push(null);
+    return stream;
+  },
 
   /**
    * Return type of file. This will retrieve the extension as well as make

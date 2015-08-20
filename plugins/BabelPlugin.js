@@ -65,7 +65,7 @@ module.exports = function __generateBabelPlugin(config) {
  * @returns {String} the modified or original data
    */
   return function BabelPlugin(data, synchronous, extension) {
-    var extensions = babelCfg.extensions || ['.js', '.es6', '.es2015'];
+    var extensions = babelCfg.extensions || ['.es6', '.es2015'];
     delete babelCfg.extensions;
 
     if (extensions.indexOf(extension) === -1) {

@@ -120,8 +120,9 @@ CachedFile.prototype = Object.create({}, {
         self.deferreds.stat.resolve(self.mtime);
         self.deferreds.file.resolve(self.data);
 
-        debug('readFile(%s) %dms [sync] %s', self.path,
-            Date.now() - startTime, useCache ? '[cached]' : '');
+        debug('readFile(%s) %dms [sync] %s%s%s', self.path,
+            Date.now() - startTime, csi.HIFG.WHITE,
+            useCache ? '[cached]' : '', csi.RESET);
 
         if (!useCache) {
           self.data = self.runPlugins(self.data, !!synchronous);
@@ -161,8 +162,8 @@ CachedFile.prototype = Object.create({}, {
         else {
           self.deferreds.file.resolve(cache[self.path].data);
           self.deferreds.stat.resolve(cache[self.path].mtime);
-          debug('readFile(%s) %dms [cached]', self.path,
-              Date.now() - startTime);
+          debug('readFile(%s) %dms %s[cached]%s', self.path,
+              Date.now() - startTime, csi.HIFG.WHITE, csi.RESET);
         }
       });
 
@@ -230,7 +231,7 @@ CachedFile.prototype = Object.create({}, {
         try {
           alteredData = this.plugins[i].call(
             this,
-            alteredData,
+            alteredData.toString(),
             synchronous,
             extension
           ) || alteredData;
