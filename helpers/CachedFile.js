@@ -80,7 +80,7 @@ function CachedFile(filePath, synchronous, plugins) {
   CachedFile.cache[this.path] = this;
 
   this.data = null;
-  this.mtime = Number.MAX_VALUE;
+  this.mtime = Number.MIN_VALUE;
 
   this.readFile(synchronous);
 }
@@ -109,35 +109,37 @@ CachedFile.prototype = Object.create({}, {
       this.deferreds.stat = Q.defer();
 
       if (!!synchronous) {
-        var mtime = new Date(fs.statSync(self.path).mtime).getTime();
-        var useCache = cache[self.path] && cache[self.path].mtime <= mtime;
+        var mtime = new Date(fs.statSync(this.path).mtime).getTime();
+        var useCache =
+            ((cache[this.path] ? cache[this.path].mtime : 0) - mtime) >= 0;
 
-        self.data = useCache
-          ? cache[self.path].data
-          : fs.readFileSync(self.path).toString();
-        self.mtime = useCache ? self.mtime : mtime;
+        this.data = useCache
+          ? cache[this.path].data
+          : fs.readFileSync(this.path).toString();
+        this.mtime = useCache ? this.mtime : mtime;
 
-        self.deferreds.stat.resolve(self.mtime);
-        self.deferreds.file.resolve(self.data);
+        this.deferreds.stat.resolve(this.mtime);
+        this.deferreds.file.resolve(this.data);
 
-        debug('readFile(%s) %dms [sync] %s%s%s', self.path,
+        debug('readFile(%s) %dms [sync] %s%s%s', this.path,
             Date.now() - startTime, csi.HIFG.WHITE,
             useCache ? '[cached]' : '', csi.RESET);
 
         if (!useCache) {
-          self.data = self.runPlugins(self.data, !!synchronous);
+          this.data = this.runPlugins(this.data, !!synchronous);
         }
 
-        return self.data;
+        return this.data;
       }
 
       fs.stat(this.path, function(statErr, stat) {
         if (statErr) { self.deferreds.stat.reject(statErr); }
 
         var mtime = statErr
-          ? Number.MAX_VALUE
+            ? Number.MIN_VALUE
           : new Date(stat.mtime).getTime();
-        var useCache = cache[self.path] && cache[self.path].mtime <= mtime;
+        var useCache =
+            ((cache[this.path] ? cache[this.path].mtime : 0) - mtime) >= 0;
         var cache = CachedFile.cache;
 
         if (!useCache) {
