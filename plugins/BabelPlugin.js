@@ -49,7 +49,7 @@ module.exports = function __generateBabelPlugin(config) {
   var babelCfg = extend(true, {
     extensions: ['.js', '.es6', '.es2015'],
     stage: 1,
-    sourceMaps: 'inline'
+    retainLines: true
   }, config || {});
 
 
