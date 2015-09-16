@@ -27,7 +27,9 @@
 var Q = require('q');
 var sass = require('node-sass');
 var path = require('path');
+var extend = require('extend');
 var debug = require('debug')('combiner:SASSPlugin');
+var paths = [];
 
 /**
  * A CachedFile plugin that takes the data loaded from disk for files ending
@@ -45,12 +47,32 @@ function SASSPlugin(data, synchronous, extension) {
     debug('compiling SASS/SCSS code');
     data = sass.renderSync({
       data: data,
-      embedSourceMap: true,
-      includePaths: [path.dirname(this.path)]
+      includePaths: [path.dirname(this.path)].concat(paths)
     }).css;
   }
 
   return data;
 }
+
+Object.defineProperties(SASSPlugin, {
+  /**
+   * This array, if set on SASSPlugin, will be concatenated to the default
+   * include paths allowing additional app specific locations for things like
+   * mixins to exist elsewhere in the site. The paths are expected to be
+   * non-relative paths.
+   */
+  additionalPaths: {
+    get: function() {
+      return paths;
+    },
+
+    set: function(value) {
+      paths = value || [];
+    },
+
+    configurable: false,
+    enumerable: true
+  }
+});
 
 module.exports = SASSPlugin;

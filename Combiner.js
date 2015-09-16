@@ -208,6 +208,10 @@ Combiner.prototype = {
           pth.basename(url.pathname))
     };
 
+    if (this.app.get('env') !== 'production') {
+      valueStore.cachedFiles = {};
+    }
+
     debug('baseHandlerFn:\n\tname: %s\n\tpath: %s\n\trel. path: %s',
         valueStore.assetName, valueStore.assetPath, valueStore.assetRelPath);
 
