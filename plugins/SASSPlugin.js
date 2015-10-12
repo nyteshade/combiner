@@ -45,10 +45,22 @@ var paths = [];
 function SASSPlugin(data, synchronous, extension) {
   if (extension === '.sass' || extension === '.scss') {
     debug('compiling SASS/SCSS code');
-    data = sass.renderSync({
-      data: data,
-      includePaths: [path.dirname(this.path)].concat(paths)
-    }).css;
+    try {
+      data = sass.renderSync({
+        data: data,
+        includePaths: [path.dirname(this.path)].concat(paths)
+      }).css;
+    }
+    catch (error) {
+      console.error('%sSASS/SCSS ERROR%s: %s\n%s%s%s',
+        csi.FG.RED,
+        csi.FG.RESET,
+        error.message,
+        csi.HIFG.BLACK,
+        indent(error.stack, ' ', 4),
+        csi.RESET
+      );
+    }
   }
 
   return data;

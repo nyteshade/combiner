@@ -77,7 +77,7 @@ module.exports = function __generateBabelPlugin(config) {
       return babel.transform(data, babelCfg).code;
     }
     catch (error) {
-      debug('%sERROR%s: %s\n%s%s%s',
+      console.error('%sBABEL ERROR%s: %s\n%s%s%s',
         csi.FG.RED,
         csi.FG.RESET,
         error.message,
