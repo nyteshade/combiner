@@ -1,6 +1,6 @@
 {
   "name": "combiner-lib",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "A piece of middleware for node/express servers that combines dependent JavaScript and CSS into single files as needed for a given page",
   "main": "Combiner.js",
   "dependencies": {

@@ -49,7 +49,8 @@ module.exports = function __generateBabelPlugin(config) {
   var babelCfg = extend(true, {
     extensions: ['.js', '.es6', '.es2015'],
     stage: 1,
-    retainLines: true
+    retainLines: true,
+    modules: 'common'
   }, config || {});
 
 

@@ -264,6 +264,7 @@ Combiner.prototype = {
     // root, plus the path specified in the root and finally the relative path.
     // Finally check the file system for the existence of the asset in question
     // and add it to the list if it does.
+    var foundOne = false;
     handler.roots.forEach((function(root, index, array) {
       if (root.type === Combiner.NETWORK) {
         return; // move on as we are not supporting this on the first pass
@@ -277,8 +278,27 @@ Combiner.prototype = {
       if (fs.existsSync(fullPath)) {
         debug('%s exists!', fullPath);
         existingAssets.push(fullPath);
+        foundOne = true;
       }
     }).bind(this));
+
+    // If none of the files were found, report this to the console as an error
+    // that can be picked up later.
+    if (!foundOne) {
+      console.warn(
+        '%s%sWARNING%s:The file %s%s%s cannot be found in any of the paths!',
+        csi.ON.BOLD,
+        csi.FG.YELLOW,
+        csi.RESET,
+        csi.ON.BOLD,
+        relativePath,
+        csi.RESET
+      );
+      handler.roots.forEach((function(root) {
+        var prefix = root.prefix || this.projectRoot;
+        console.warn('\t%s', pth.join(prefix, root.path || ''));
+      }).bind(this));
+    }
 
     // Start processing the files we know about. Recurse back through this
     // function for each of the dependents and just return if there are no
