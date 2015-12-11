@@ -560,29 +560,7 @@ Combiner.prototype = {
       }
     }
 
-    var zlib = require('zlib');
-    var raw = Combiner.getStream(output);
-
-    // Check to see if the browser is stating it can accept and deal with
-    // encoded formats
-    var acceptEncoding = req.headers['accept-encoding'];
-    if (!acceptEncoding) {
-      acceptEncoding = '';
-    }
-
-    // Based on the browsers statements, send either gzip, deflate or raw data
-    // to the client.
-    if (acceptEncoding.match(/\bgzip\b/)) {
-      res.set('Content-Encoding', 'gzip');
-      raw.pipe(zlib.createGzip()).pipe(res);
-    }
-    else if (acceptEncoding.match(/\bdeflate\b/)) {
-      res.set('Content-Encoding', 'deflate');
-      raw.pipe(zlib.createDeflate()).pipe(res);
-    }
-    else {
-      raw.pipe(res);
-    }
+    res.send(output);
   }
 };
 
