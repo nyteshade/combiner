@@ -25,7 +25,7 @@
     "delayed-stream": "^1.0.0",
     "escape-string-regexp": "^1.0.3",
     "extend": "^3.0.0",
-    "form-data": "^1.0.0-rc3",
+    "form-data": "^2.0.0",
     "generate-function": "^2.0.0",
     "generate-object-property": "^1.2.0",
     "graceful-readlink": "^1.0.1",
